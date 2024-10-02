@@ -1,0 +1,11 @@
+__pycache__
+
+models
+data
+training
+
+*.so
+*.pyd
+*.lprof
+*.ipynb
+*botzone*
