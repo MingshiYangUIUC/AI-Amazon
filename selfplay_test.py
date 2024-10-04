@@ -43,7 +43,7 @@ def batch_process_boards(boards, roles, actions_list):
 
 
 #@profile
-def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0, -1.0), randomdir=False, randomtransform=False, eval_device='cuda'):
+def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0, -1.0), max_action = 9999, randomdir=False, randomtransform=False, eval_device='cuda'):
     Model.eval()
     
     board_dtype = torch.int8
@@ -141,7 +141,9 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
                     continue
 
             #rtensor = torch.zeros((bsize,bsize),dtype=eval_dtype)+role
-
+            if max_action<actions.shape[0]:
+                actions = actions[np.random.choice(actions.shape[0], size=max_action, replace=False)]
+            
             roles = torch.zeros(len(actions),dtype=board_dtype) + role
 
             model_inputs.append(batch_process_boards(board.unsqueeze(0).repeat(len(actions), 1, 1),roles,actions))
@@ -217,7 +219,7 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
     return data_X, data_Y, data_S, data_A, wins, eval_time
 
 #@profile
-def compete_batch_gpu(Models, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0, -1.0), randomdir=False, randomtransform=False, eval_device='cuda'):
+def compete_batch_gpu(Models, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0, -1.0), max_action = (9999,9999), randomdir=False, randomtransform=False, eval_device='cuda'):
     board_dtype = torch.int8
     if 'cuda' in eval_device:
         eval_dtype = torch.float16
@@ -256,7 +258,7 @@ def compete_batch_gpu(Models, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
                 board = random_rotate_and_flip(board)
             role = Turn_mapper[Turns[_]%2]
             # obtain final states based on avail actions
-            actions = select_action_cpp(board,role)
+            actions = np.array(select_action_cpp(board,role))
             #print(actions)
             if len(actions) == 0: # conclude the game!!!
                 n_finish += 1
@@ -279,7 +281,7 @@ def compete_batch_gpu(Models, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
                     Game_boards[_] = board
                     role = Turn_mapper[0]
                     
-                    actions = select_action_cpp(board,role)
+                    actions = np.array(select_action_cpp(board,role))
 
                 else:
                     # skip this action creation
@@ -287,10 +289,16 @@ def compete_batch_gpu(Models, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
                     continue
 
             #rtensor = torch.zeros((bsize,bsize),dtype=eval_dtype)+role
+            if MasterTurn % 2 == 0:
+                if max_action[0]<actions.shape[0]:
+                    actions = actions[np.random.choice(actions.shape[0], size=max_action[0], replace=False)]
+            else:
+                if max_action[1]<actions.shape[0]:
+                    actions = actions[np.random.choice(actions.shape[0], size=max_action[1], replace=False)]
 
             roles = torch.zeros(len(actions),dtype=board_dtype) + role
 
-            model_inputs.append(batch_process_boards(board.unsqueeze(0).repeat(len(actions), 1, 1),roles,np.array(actions,dtype=np.int32)))
+            model_inputs.append(batch_process_boards(board.unsqueeze(0).repeat(len(actions), 1, 1),roles,actions))
 
             model_idxs.append(len(actions))
             acts_list.append(actions)
@@ -400,12 +408,12 @@ if __name__ == '__main__':
 
     Qmodel2.eval()
     with torch.inference_mode():
-        for i in range(1600000,1600001,100000):
+        for i in range(3260000,3260001,100000):
             Qmodel1 = Q_V0_1(m, X, B, c, mlp_hidden_sizes)
             Qmodel1.load_state_dict(torch.load(os.path.join(wd,'models',f'Qmodel_v0_1_B{B}C{c}_{str(i).zfill(10)}.pth'),weights_only=True))
             Qmodel1.eval()
-            win1 = compete_batch_gpu([Qmodel1,Qmodel2],8,n_game=8,n_task=128,temp_args=(0,2,-1),randomdir=True,randomtransform=True,eval_device='cuda')
-            win2 = compete_batch_gpu([Qmodel2,Qmodel1],8,n_game=8,n_task=128,temp_args=(0,2,-1),randomdir=True,randomtransform=True,eval_device='cuda')
+            win1 = compete_batch_gpu([Qmodel1,Qmodel2],8,n_game=8,n_task=256,temp_args=(0,2,-1),max_action=(9999,9999),randomdir=True,randomtransform=True,eval_device='cuda')
+            win2 = compete_batch_gpu([Qmodel2,Qmodel1],8,n_game=8,n_task=256,temp_args=(0,2,-1),max_action=(9999,9999),randomdir=True,randomtransform=True,eval_device='cuda')
 
             print(i, win1,win2[::-1],win1+win2[::-1],'                    ')
             gc.collect()

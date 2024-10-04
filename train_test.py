@@ -81,7 +81,7 @@ def worker(args):
         torch.set_num_threads(1)
         torch.set_num_interop_threads(1)
 
-    Qmodel, bsize, n_game, n_task, temp_args, randomdir, randomtransform, eval_device, seed = args
+    Qmodel, bsize, n_game, n_task, temp_args, max_action, randomdir, randomtransform, eval_device, seed = args
     
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -99,7 +99,7 @@ def worker(args):
 
     with torch.inference_mode():
         Qmodel = torch.compile(Qmodel)
-        X, Y, S,A,wins, eval_time = selfplay_batch_gpu(Qmodel, bsize, n_game, n_task, temp_args, randomdir, randomtransform, eval_device)
+        X, Y, S,A,wins, eval_time = selfplay_batch_gpu(Qmodel, bsize, n_game, n_task, temp_args, max_action, randomdir, randomtransform, eval_device)
     
     return X, Y, S,A,wins, eval_time
 
@@ -129,19 +129,20 @@ if __name__ == '__main__':
         os.mkdir(os.path.join(wd,'training'))
 
     num_processes = 6
-    sp_batch_size = 8
+    sp_batch_size = 12
 
-    batch_games = 2500
+    batch_games = 5000
     boardsize = 8
 
-    temp_args = (0.1, 2.0, -1.0) # Base, Scale, Power. follows t = B * ceil( floor(turn // S) + 1) ** P
+    temp_args = (0.01, 2.0, 0.0) # Base, Scale, Power. follows t = B * ceil( floor(turn // S) + 1) ** P
+    max_action = 200 # start in # 3260000
     randomdir = True
     randomtransform = True
 
     batch_size = 2048
     nepoch = 2
     l2_reg_strength = 1e-8
-    lr = 0.00001
+    lr = 0.000001
 
 
     m, X, B, c = 4, boardsize, 6, 96  # m input channels, X*X input size, N residual blocks, c channels
@@ -202,7 +203,7 @@ if __name__ == '__main__':
 
         seeds = np.random.randint(-2**32,2**32-1,num_processes)
         
-        args = [(Qmodel_inference, boardsize, sp_batch_size, chunks_ngame[_], temp_args, randomdir, randomtransform, eval_devices[_], seeds[_]) for _ in range(num_processes)]
+        args = [(Qmodel_inference, boardsize, sp_batch_size, chunks_ngame[_], temp_args, max_action, randomdir, randomtransform, eval_devices[_], seeds[_]) for _ in range(num_processes)]
         results = pool.map(worker, args)
 
         Xd = torch.cat([res[0] for res in results])
@@ -228,7 +229,7 @@ if __name__ == '__main__':
 
         #print(SL_X.nbytes/1024**3)
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
         opt = torch.optim.Adam(Qmodel.parameters(), lr=lr, weight_decay=l2_reg_strength)
         Qmodel, loss = train_model('cuda', Qmodel, torch.nn.MSELoss(), train_loader, nepoch, opt)
         Qmodel.to('cpu')
