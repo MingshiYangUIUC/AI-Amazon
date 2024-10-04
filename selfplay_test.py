@@ -49,16 +49,14 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
     board_dtype = torch.int8
     if 'cuda' in eval_device:
         eval_dtype = torch.float16
-        Model.to(eval_device).to(eval_dtype)
     else:
         eval_dtype = torch.float32
-
-    Model = torch.compile(Model)
 
     '''example_input = torch.randn((1, 2, 8, 8),dtype=torch.float16).cuda()
 
     Model = torch_tensorrt.compile(
     Model,
+    ir="torch_compile",
     inputs=[torch_tensorrt.Input(example_input.shape)],
     enabled_precisions={torch.float16}  # FP16 precision (if supported)
     )'''
@@ -73,6 +71,9 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
 
     data_X = [[] for _ in range(n_game)]
     data_Y = [[] for _ in range(n_game)]
+
+    data_S = [[] for _ in range(n_game)]
+    data_A = [[] for _ in range(n_game)]
 
     n_submit = n_game
     n_finish = 0
@@ -96,7 +97,7 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
                 board = random_rotate_and_flip(board)
             role = Turn_mapper[Turns[_]%2]
             # obtain final states based on avail actions
-            actions = select_action_cpp(board,role)
+            actions = np.array(select_action_cpp(board,role),dtype=np.int32)
             #print(actions)
             if len(actions) == 0: # conclude the game!!!
                 n_finish += 1
@@ -132,7 +133,7 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
                     Game_boards[_] = board
                     role = Turn_mapper[0]
                     
-                    actions = select_action_cpp(board,role)
+                    actions = np.array(select_action_cpp(board,role),dtype=np.int32)
 
                 else:
                     # skip this action creation
@@ -143,7 +144,7 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
 
             roles = torch.zeros(len(actions),dtype=board_dtype) + role
 
-            model_inputs.append(batch_process_boards(board.unsqueeze(0).repeat(len(actions), 1, 1),roles,np.array(actions,dtype=np.int32)))
+            model_inputs.append(batch_process_boards(board.unsqueeze(0).repeat(len(actions), 1, 1),roles,actions))
 
             model_idxs.append(len(actions))
             acts_list.append(actions)
@@ -193,6 +194,9 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
 
             newstates = model_inputs[idx_start:idx_end][argq]
 
+            data_S[_].append(Game_boards[_].clone())
+            data_A[_].append(torch.from_numpy(acts[argq]).to(torch.int8))
+
             Game_boards[_] = newstates[0]
 
             data_X[_].append(newstates)
@@ -205,9 +209,12 @@ def selfplay_batch_gpu(Model, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0,
 
     data_X = torch.cat([torch.stack(dx) for dx in data_X])
     data_Y = torch.cat([torch.cat(dy) for dy in data_Y]).unsqueeze(1)
+
+    data_S = torch.cat([torch.stack(ds) for ds in data_S])
+    data_A = torch.cat([torch.stack(da) for da in data_A])
     #print(data_X.shape,data_Y.shape)
 
-    return data_X, data_Y, wins, eval_time
+    return data_X, data_Y, data_S, data_A, wins, eval_time
 
 #@profile
 def compete_batch_gpu(Models, bsize, n_game=10, n_task=100, temp_args=(1.0, 2.0, -1.0), randomdir=False, randomtransform=False, eval_device='cuda'):
@@ -393,12 +400,12 @@ if __name__ == '__main__':
 
     Qmodel2.eval()
     with torch.inference_mode():
-        for i in range(200000,1400001,100000):
+        for i in range(1600000,1600001,100000):
             Qmodel1 = Q_V0_1(m, X, B, c, mlp_hidden_sizes)
             Qmodel1.load_state_dict(torch.load(os.path.join(wd,'models',f'Qmodel_v0_1_B{B}C{c}_{str(i).zfill(10)}.pth'),weights_only=True))
             Qmodel1.eval()
-            win1 = compete_batch_gpu([Qmodel1,Qmodel2],8,n_game=32,n_task=128,temp_args=(0,2,-1),randomdir=True,randomtransform=True,eval_device='cuda')
-            win2 = compete_batch_gpu([Qmodel2,Qmodel1],8,n_game=32,n_task=128,temp_args=(0,2,-1),randomdir=True,randomtransform=True,eval_device='cuda')
+            win1 = compete_batch_gpu([Qmodel1,Qmodel2],8,n_game=8,n_task=128,temp_args=(0,2,-1),randomdir=True,randomtransform=True,eval_device='cuda')
+            win2 = compete_batch_gpu([Qmodel2,Qmodel1],8,n_game=8,n_task=128,temp_args=(0,2,-1),randomdir=True,randomtransform=True,eval_device='cuda')
 
             print(i, win1,win2[::-1],win1+win2[::-1],'                    ')
             gc.collect()

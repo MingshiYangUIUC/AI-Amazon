@@ -9,3 +9,4 @@ training
 *.lprof
 *.ipynb
 *botzone*
+*.pth

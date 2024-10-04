@@ -88,10 +88,20 @@ def worker(args):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
     
+    torch.cuda.set_device(eval_device)
+
+    if 'cuda' in eval_device:
+        eval_dtype = torch.float16
+        Qmodel.to(eval_device).to(eval_dtype)
+    else:
+        eval_dtype = torch.float32
+
+
     with torch.inference_mode():
-        X, Y, wins, eval_time = selfplay_batch_gpu(Qmodel, bsize, n_game, n_task, temp_args, randomdir, randomtransform, eval_device)
+        Qmodel = torch.compile(Qmodel)
+        X, Y, S,A,wins, eval_time = selfplay_batch_gpu(Qmodel, bsize, n_game, n_task, temp_args, randomdir, randomtransform, eval_device)
     
-    return X, Y, wins, eval_time
+    return X, Y, S,A,wins, eval_time
 
 if __name__ == '__main__':
 
@@ -122,7 +132,6 @@ if __name__ == '__main__':
     sp_batch_size = 8
 
     batch_games = 2500
-
     boardsize = 8
 
     temp_args = (0.1, 2.0, -1.0) # Base, Scale, Power. follows t = B * ceil( floor(turn // S) + 1) ** P
@@ -162,7 +171,7 @@ if __name__ == '__main__':
             pass
     except:
         current_games = 0
-        torch.save(Qmodel.state_dict(),os.path.join('/home/mingshiyang/AI-Amazon-DQN/models',f'Qmodel_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
+        torch.save(Qmodel.state_dict(),os.path.join(wd,'models',f'Qmodel_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
 
         
     print('Current:', current_games)
@@ -198,13 +207,20 @@ if __name__ == '__main__':
 
         Xd = torch.cat([res[0] for res in results])
         Yd = torch.cat([res[1] for res in results])
-        wins = np.sum(np.stack([res[2] for res in results]),axis=0)
 
-        eval_time = sum([res[3] for res in results])
+        Sd = torch.cat([res[2] for res in results])
+        Ad = torch.cat([res[3] for res in results])
 
-        print(Xd.shape, Yd.shape, wins, Yd.mean().item())
+        wins = np.sum(np.stack([res[4] for res in results]),axis=0)
+
+        eval_time = sum([res[5] for res in results])
+
+        print(Xd.shape, Yd.shape, Sd.shape, Ad.shape, wins, Yd.mean().item())
         torch.save(Xd.to(torch.int8),os.path.join(wd,'training',f'X_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
         torch.save(Yd,os.path.join(wd,'training',f'Y_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
+
+        torch.save(Sd.to(torch.int8),os.path.join(wd,'training',f'S_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
+        torch.save(Ad,os.path.join(wd,'training',f'A_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
         #quit()
         del results
 
@@ -224,14 +240,14 @@ if __name__ == '__main__':
 
         if current_games % 20000 == 0:
             print('Save model and restart pool')
-            torch.save(Qmodel.state_dict(),os.path.join('/home/mingshiyang/AI-Amazon-DQN/models',f'Qmodel_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
+            torch.save(Qmodel.state_dict(),os.path.join(wd,'models',f'Qmodel_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
 
             pool.close()
             pool.join()
             gc.collect()
             pool = Pool(processes=num_processes)
         
-        torch.save(Qmodel.state_dict(),os.path.join('/home/mingshiyang/AI-Amazon-DQN',f'checkpoint.pth'))
+        torch.save(Qmodel.state_dict(),os.path.join(wd,f'checkpoint.pth'))
 
         t1 = time.time()
         print('Model Params:',m, X, B, c,'\n',
