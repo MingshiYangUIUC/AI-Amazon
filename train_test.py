@@ -22,9 +22,11 @@ import random
 # Custom transform to randomly rotate by 0, 90, 180, or 270 degrees
 class Random90DegreeRotation:
     def __call__(self, x):
-        angles = [0, 90, 180, 270]
-        angle = random.choice(angles)
-        return F.rotate(x, angle)
+        # Use torch.randint to select a random rotation (0, 90, 180, 270 degrees)
+        num_rotations = torch.randint(0, 4, (1,)).item()  # 0: 0 degrees, 1: 90 degrees, 2: 180 degrees, 3: 270 degrees
+        #print(f"Applying {90 * num_rotations} degrees rotation")
+        return torch.rot90(x, num_rotations, [-2, -1])  # Apply the rotation using torch.rot90
+
 
 train_transform = transforms.Compose([
     v2.RandomHorizontalFlip(p=0.5),  # Random horizontal flip with a probability of 0.5
@@ -41,38 +43,54 @@ class CustomTensorDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         x = self.tensors[0][index]
         y = self.tensors[1][index]
+        t = self.tensors[2][index]
 
         if self.transform:
-            # Apply transformation on the input (x)
-            x = self.transform(x)
-
-        return x, y
+            # Apply the same transform to both x and t
+            state = torch.random.get_rng_state()  # Save the random state
+            x_transformed = self.transform(x)
+            torch.random.set_rng_state(state)  # Reset the random state for t
+            t_transformed = self.transform(t)
+            return x_transformed, y, t_transformed
+        return x, y, t
 
     def __len__(self):
         return len(self.tensors[0])
 
-def train_model(device, model, criterion, loader, nep, optimizer,dtype=torch.float32):
-    #scaler = torch.cuda.amp.GradScaler()
+def train_model(device, model, criterion_win, criterion_territory, territory_weight, loader, nep, optimizer, dtype=torch.float32):
     model.to(device)
     model.train()  # Set the model to training mode
     for epoch in range(nep):
         running_loss = 0.0
         
-        for inputs, targets in tqdm(loader):
+        for inputs, win_targets, territory_targets in tqdm(loader):
             if inputs.size(0) > 1:
-                inputs, targets = inputs.to(device, non_blocking=True).to(dtype), targets.to(device, non_blocking=True).to(dtype)
+                # Move inputs and targets to device
+                inputs = inputs.to(device, non_blocking=True).to(dtype)
+                win_targets = win_targets.to(device, non_blocking=True).to(dtype)
+                territory_targets = territory_targets.to(device, non_blocking=True).to(dtype)
                 
-                outputs = model(inputs)  # Forward pass
-                loss = criterion(outputs, targets)  # Calculate loss
-                loss.backward()  # Backward pass
-                optimizer.step()  # Optimize
-                optimizer.zero_grad(set_to_none=True)  # Zero the gradients
+                # Forward pass
+                win_outputs, territory_outputs = model(inputs)
                 
-                running_loss += loss.item()
+                # Calculate losses for both outputs
+                win_loss = criterion_win(win_outputs, win_targets)
+                territory_loss = criterion_territory(territory_outputs, territory_targets)
+                
+                # Combine the losses (you can apply weights here if needed)
+                total_loss = win_loss + territory_loss*territory_weight
+                
+                # Backward pass
+                total_loss.backward()
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                
+                running_loss += total_loss.item()
         
         # Calculate the average loss per batch over the epoch
         epoch_loss = running_loss / len(loader)
         print(f"Epoch {epoch+1}/{nep}, Training Loss: {epoch_loss:.4f}")
+    
     return model, epoch_loss
 
 
@@ -99,9 +117,9 @@ def worker(args):
 
     with torch.inference_mode():
         Qmodel = torch.compile(Qmodel)
-        X, Y, S,A,wins, eval_time = selfplay_batch_gpu(Qmodel, bsize, n_game, n_task, temp_args, max_action, randomdir, randomtransform, eval_device)
+        X, Y, T, wins, eval_time = selfplay_batch_gpu(Qmodel, bsize, n_game, n_task, temp_args, max_action, randomdir, randomtransform, eval_device)
     
-    return X, Y, S,A,wins, eval_time
+    return X, Y, T, wins, eval_time
 
 if __name__ == '__main__':
 
@@ -129,29 +147,31 @@ if __name__ == '__main__':
         os.mkdir(os.path.join(wd,'training'))
 
     num_processes = 6
-    sp_batch_size = 12
+    sp_batch_size = 8
 
-    batch_games = 5000
+    batch_games = 2500
     boardsize = 8
 
-    temp_args = (0.01, 2.0, 0.0) # Base, Scale, Power. follows t = B * ceil( floor(turn // S) + 1) ** P
-    max_action = 200 # start in # 3260000
+    temp_args = (0.1, 2.0, -1.0) # Base, Scale, Power. follows t = B * ceil( floor(turn // S) + 1) ** P
+    max_action = 9999 # start in # 3260000
     randomdir = True
     randomtransform = True
 
     batch_size = 2048
     nepoch = 2
     l2_reg_strength = 1e-8
-    lr = 0.000001
+    lr = 0.00001
+
+    territory_weight = 0.01
 
 
-    m, X, B, c = 4, boardsize, 6, 96  # m input channels, X*X input size, N residual blocks, c channels
+    m, X, B, c = 5, boardsize, 6, 96  # m input channels, X*X input size, N residual blocks, c channels
     mlp_hidden_sizes = [256]  # Sizes of hidden layers in the MLP
-    Qmodel = Q_V0_1(m, X, B, c, mlp_hidden_sizes)
-    model_version = 'v0_1'
+    Qmodel = Q_V1_0(m, X, B, c, mlp_hidden_sizes)
+    model_version = 'v1_0'
 
-    Qmodel_inference = Q_V0_1(m, X, B, c, mlp_hidden_sizes)
-    model_version = 'v0_1'
+    Qmodel_inference = Q_V1_0(m, X, B, c, mlp_hidden_sizes)
+    model_version = 'v1_0'
 
     '''try:
         mname = [f for f in os.listdir(os.path.join(wd)) if 'checkpoint' in f]
@@ -208,30 +228,27 @@ if __name__ == '__main__':
 
         Xd = torch.cat([res[0] for res in results])
         Yd = torch.cat([res[1] for res in results])
+        Td = torch.cat([res[2] for res in results])
 
-        Sd = torch.cat([res[2] for res in results])
-        Ad = torch.cat([res[3] for res in results])
+        wins = np.sum(np.stack([res[3] for res in results]),axis=0)
 
-        wins = np.sum(np.stack([res[4] for res in results]),axis=0)
+        eval_time = sum([res[4] for res in results])
 
-        eval_time = sum([res[5] for res in results])
+        print(Xd.shape, Yd.shape, Td.shape, wins, Yd.mean().item())
+        #torch.save(Xd.to(torch.int8),os.path.join(wd,'training',f'X_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
+        #torch.save(Yd,os.path.join(wd,'training',f'Y_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
 
-        print(Xd.shape, Yd.shape, Sd.shape, Ad.shape, wins, Yd.mean().item())
-        torch.save(Xd.to(torch.int8),os.path.join(wd,'training',f'X_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
-        torch.save(Yd,os.path.join(wd,'training',f'Y_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
-
-        torch.save(Sd.to(torch.int8),os.path.join(wd,'training',f'S_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
-        torch.save(Ad,os.path.join(wd,'training',f'A_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
+        #torch.save(Td.to(torch.int8),os.path.join(wd,'training',f'T_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
         #quit()
         del results
 
-        train_dataset = CustomTensorDataset((Xd, Yd), transform=train_transform)
+        train_dataset = CustomTensorDataset((Xd, Yd, Td), transform=train_transform)
 
         #print(SL_X.nbytes/1024**3)
         
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
         opt = torch.optim.Adam(Qmodel.parameters(), lr=lr, weight_decay=l2_reg_strength)
-        Qmodel, loss = train_model('cuda', Qmodel, torch.nn.MSELoss(), train_loader, nepoch, opt)
+        Qmodel, loss = train_model('cuda', Qmodel, torch.nn.MSELoss(), torch.nn.MSELoss(), territory_weight, train_loader, nepoch, opt)
         Qmodel.to('cpu')
         del train_dataset, train_loader, Xd, Yd
         torch.cuda.empty_cache()
