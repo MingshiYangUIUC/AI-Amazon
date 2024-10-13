@@ -147,13 +147,13 @@ if __name__ == '__main__':
         os.mkdir(os.path.join(wd,'training'))
 
     num_processes = 6
-    sp_batch_size = 8
+    sp_batch_size = 12
 
     batch_games = 2500
     boardsize = 8
 
     temp_args = (0.1, 2.0, -1.0) # Base, Scale, Power. follows t = B * ceil( floor(turn // S) + 1) ** P
-    max_action = 9999 # start in # 3260000
+    max_action = 200 # start in # 3260000
     randomdir = True
     randomtransform = True
 
@@ -168,10 +168,10 @@ if __name__ == '__main__':
     m, X, B, c = 5, boardsize, 6, 96  # m input channels, X*X input size, N residual blocks, c channels
     mlp_hidden_sizes = [256]  # Sizes of hidden layers in the MLP
     Qmodel = Q_V1_0(m, X, B, c, mlp_hidden_sizes)
-    model_version = 'v1_0'
+    model_version = 'v1_0a'
 
     Qmodel_inference = Q_V1_0(m, X, B, c, mlp_hidden_sizes)
-    model_version = 'v1_0'
+    model_version = 'v1_0a'
 
     '''try:
         mname = [f for f in os.listdir(os.path.join(wd)) if 'checkpoint' in f]

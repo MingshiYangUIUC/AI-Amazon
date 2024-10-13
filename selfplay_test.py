@@ -407,14 +407,14 @@ if __name__ == '__main__':
 
     Qmodel2.eval()
     with torch.inference_mode():
-        for i in range(1260000,1260001,100000):
+        for i in range(2600000,3000001,100000):
             m, X, B, c = 4, boardsize, 6, 96  # m input channels, X*X input size, N residual blocks, c channels
             mlp_hidden_sizes = [256]  # Sizes of hidden layers in the MLP
             Qmodel1 = Q_V0_1(m, X, B, c, mlp_hidden_sizes)
             Qmodel1.load_state_dict(torch.load(os.path.join(wd,'models',f'Qmodel_v0_1_B{B}C{c}_{str(i).zfill(10)}.pth'),weights_only=True))
             Qmodel1.eval()
-            win1 = compete_batch_gpu([Qmodel1,Qmodel2],8,n_game=8,n_task=32,temp_args=(0,2,-1),max_action=(9999,9999),randomdir=True,randomtransform=True,eval_device='cuda')
-            win2 = compete_batch_gpu([Qmodel2,Qmodel1],8,n_game=8,n_task=32,temp_args=(0,2,-1),max_action=(9999,9999),randomdir=True,randomtransform=True,eval_device='cuda')
+            win1 = compete_batch_gpu([Qmodel1,Qmodel2],8,n_game=8,n_task=32,temp_args=(0,2,-1),max_action=(99,99),randomdir=True,randomtransform=True,eval_device='cuda')
+            win2 = compete_batch_gpu([Qmodel2,Qmodel1],8,n_game=8,n_task=32,temp_args=(0,2,-1),max_action=(99,99),randomdir=True,randomtransform=True,eval_device='cuda')
 
             print(i, win1,win2[::-1],win1+win2[::-1],'                    ')
             gc.collect()
