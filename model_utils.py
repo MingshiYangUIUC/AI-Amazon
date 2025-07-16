@@ -179,6 +179,159 @@ class Q_V0_1(nn.Module):
         }
 
 
+class P_V0_1(nn.Module): # does not have sigmoid, so output can be both positive and negative!
+    def __init__(self, m, X, N, c, mlp_hidden_sizes):
+        super(P_V0_1, self).__init__()
+        self.m = m
+        self.X = X
+        self.N = N
+        self.c = c
+        
+        # Input convolution to map from m input channels to c channels
+        self.input_conv = nn.Conv2d(m, c, kernel_size=3, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        
+        # Stack N residual blocks with c channels
+        self.resblocks = nn.Sequential(*[ResidualBlock_BN(c) for _ in range(N)])
+        
+        self.output_conv = nn.Conv2d(c, 2, kernel_size=1, padding=0)
+        # After residual blocks, flatten the output
+        self.flatten = nn.Flatten()
+        
+        # Define MLP layers
+        mlp_layers = []
+        in_size = 2 * X * X  # Flattened input size based on c channels
+        for hidden_size in mlp_hidden_sizes:
+            mlp_layers.append(nn.Linear(in_size, hidden_size))
+            mlp_layers.append(nn.ReLU(inplace=True))
+            in_size = hidden_size
+
+        self.hiddensize = mlp_hidden_sizes
+
+        # Output layer to give a value between 0 and 1
+        mlp_layers.append(nn.Linear(in_size, 1))
+        #mlp_layers.append(nn.Sigmoid())  # To output a value between 0 and 1
+        
+        self.mlp = nn.Sequential(*mlp_layers)
+    
+    def forward(self, x):
+
+        board_channel = x[:,0]
+
+        one_hot = torch.zeros((x.shape[0], 3, self.X, self.X), device=x.device, dtype=x.dtype)
+        one_hot[:, 0, :, :] = (board_channel == -1)  # Channel for -1
+        one_hot[:, 1, :, :] = (board_channel == 1)   # Channel for 1
+        one_hot[:, 2, :, :] = (board_channel == 2)   # Channel for 2
+
+        # Extract the active player channel (second channel)
+        active_player_channel = x[:, 1, :, :].unsqueeze(1)  # Shape (B, 1, Y, X)
+
+        # Concatenate the one-hot channels with the active player channel
+        x = torch.cat([one_hot, active_player_channel], dim=1)  # Shape (B, 4, Y, X)
+
+        #print(x[0])
+    
+        # Initial conv layer
+        x = self.input_conv(x)
+        x = self.relu(x)
+        
+        # Pass through N residual blocks
+        x = self.resblocks(x)
+
+        x = self.output_conv(x)
+        x = self.relu(x)
+        
+        # Flatten the output
+        x = self.flatten(x)
+        
+        # Pass through the MLP layers
+        x = self.mlp(x)
+        
+        return x
+    
+    def get_model_description(self):
+        # Returns a dictionary description of the model
+        return {
+            'name': 'P_V0_1',
+            'n_resblock': self.N,
+            'size': self.X,
+            'n_feature': self.m,
+            'n_channels': self.c,
+            'hidden_sizes': '-'.join([str(hs) for hs in self.hiddensize])
+        }
+
+
+class PolicyNet(nn.Module):
+    def __init__(self, m=4, X=8, N=6, c=96):
+        super().__init__()
+        self.X = X  # board size
+
+        self.conv_in = nn.Conv2d(m, c, kernel_size=3, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.res_blocks = nn.Sequential(*[
+            ResidualBlock_BN(c) for _ in range(N)
+        ])
+
+        # Output heads: from, to, arrow
+        self.policy_heads = nn.ModuleList([
+            nn.Conv2d(c, 1, kernel_size=1) for _ in range(3)
+        ])
+
+    def forward(self, x):
+        board_channel = x[:, 0]
+
+        one_hot = torch.zeros((x.shape[0], 3, self.X, self.X), device=x.device, dtype=x.dtype)
+        one_hot[:, 0] = (board_channel == -1)  # player 1
+        one_hot[:, 1] = (board_channel == 1)   # player 2
+        one_hot[:, 2] = (board_channel == 2)   # obstacle / arrow
+
+        active_player_channel = x[:, 1].unsqueeze(1)  # shape: (B, 1, X, X)
+
+        x = torch.cat([one_hot, active_player_channel], dim=1)  # shape: (B, m=4, X, X)
+
+        x = self.relu(self.conv_in(x))
+        x = self.res_blocks(x)
+
+        outputs = [head(x) for head in self.policy_heads]  # list of [B, 1, X, X]
+        out = torch.cat(outputs, dim=1)  # shape: (B, 3, X, X)
+        return out
+
+class PolicyNet_j(nn.Module):
+    def __init__(self, m=4, X=8, N=6, c=96):
+        super().__init__()
+        self.X = X  # board size
+
+        self.conv_in = nn.Conv2d(m, c, kernel_size=3, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.res_blocks = nn.Sequential(*[
+            ResidualBlock_BN(c) for _ in range(N)
+        ])
+
+        # Output heads: from, to, arrow
+        self.policy_head1 = nn.Conv2d(c, 32, kernel_size=1)
+        self.policy_head2 = nn.Conv2d(32, 3, kernel_size=1)
+
+    def forward(self, x):
+        board_channel = x[:, 0]
+
+        one_hot = torch.zeros((x.shape[0], 3, self.X, self.X), device=x.device, dtype=x.dtype)
+        one_hot[:, 0] = (board_channel == -1)  # player 1
+        one_hot[:, 1] = (board_channel == 1)   # player 2
+        one_hot[:, 2] = (board_channel == 2)   # obstacle / arrow
+
+        active_player_channel = x[:, 1].unsqueeze(1)  # shape: (B, 1, X, X)
+
+        x = torch.cat([one_hot, active_player_channel], dim=1)  # shape: (B, m=4, X, X)
+
+        x = self.relu(self.conv_in(x))
+        x = self.res_blocks(x)
+
+        x = self.policy_head1(x) 
+        x = self.policy_head2(x) # shape: (B, 3, X, X)
+        return x
+
 if __name__ == '__main__':
     # Example usage:
     m, X, N, c = 3, 32, 5, 64  # m input channels, X*X input size, N residual blocks, c channels

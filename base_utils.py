@@ -119,6 +119,25 @@ def update_board(b,role,action):
 def check_finish(actions):
     return len(actions) == 0
 
+
+def winrate_confidence_interval(wins, losses, confidence=0.95):
+    n = wins + losses
+    if n == 0:
+        return (0.0, 1.0)  # undefined, full uncertainty
+
+    z = 1.96  # for 95% confidence
+    p_hat = wins / n
+
+    denominator = 1 + z**2 / n
+    centre = p_hat + z**2 / (2 * n)
+    margin = z * np.sqrt((p_hat * (1 - p_hat) / n) + (z**2 / (4 * n**2)))
+
+    lower = (centre - margin) / denominator
+    upper = (centre + margin) / denominator
+
+    return lower, upper
+
+
 if __name__ == '__main__':
     b = start_board(8)
     actions = select_action_cpp(b,-1)
