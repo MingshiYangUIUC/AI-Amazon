@@ -7,7 +7,7 @@ from selfplay_test import *
 
 import time
 from torch.multiprocessing import Pool
-from torch.utils.data import TensorDataset, DataLoader, ConcatDataset
+from torch.utils.data import TensorDataset, DataLoader, ConcatDataset, Subset
 from tqdm import tqdm
 import os
 import gc
@@ -206,15 +206,15 @@ def worker(args):
         eval_dtype = torch.float16
         Qmodel.to(eval_device).to(eval_dtype)
         Policy.to(eval_device).to(eval_dtype)
-        Qmodel = torch.compile(Qmodel)
-        Policy = torch.compile(Policy)
+        #Qmodel = torch.compile(Qmodel)
+        #Policy = torch.compile(Policy)
     else:
         eval_dtype = torch.float32
 
 
     with torch.inference_mode():
         #Qmodel = torch.compile(Qmodel)
-        X, Y, S, A, wins, eval_time = selfplay_batch_gpu(Qmodel, Policy, bsize, n_game, n_task, temp_args, max_action, randomdir, randomtransform, eval_device, 
+        X, Y, S, A, wins, eval_time = selfplay_batch_gpu_distill(Qmodel, Policy, bsize, min(n_game,n_task), n_task, temp_args, max_action, randomdir, randomtransform, eval_device, 
         transform_score, dr_noise, prune_chance)
     
     return X, Y, S, A, wins, eval_time
@@ -245,19 +245,19 @@ if __name__ == '__main__':
         os.mkdir(os.path.join(wd,'training'))
 
     num_processes = 6
-    sp_batch_size = 24
+    sp_batch_size = 32
 
-    batch_games = 5000
-    refresh_freq = 20000
+    batch_games = 100
+    refresh_freq = 500
     boardsize = 8
 
-    temp_args = (0.05, 2.0, 0, 3) # Base, Scale, Power, Policy temperature. follows t = B * ceil( floor(turn // S) + 1) ** P
-    max_action = 400 # 9999 if not doing any action pruning. set to low number for action pruning (use policy to speed up selfplay)
+    temp_args = (0.1, 2.0, 0, 3) # Base, Scale, Power, Policy temperature. follows t = B * ceil( floor(turn // S) + 1) ** P
+    max_action = 200 # 9999 if not doing any action pruning. set to low number for action pruning (use policy to speed up selfplay)
     prune_chance = 0.9 # chance of action pruning.
     randomdir = True
     randomtransform = True
 
-    batch_size = 2048
+    batch_size = 256
     #nepoch = 2
     l2_reg_strength = 1e-8
     #lr = 0.000001
@@ -265,30 +265,9 @@ if __name__ == '__main__':
     dr_noise = 0.03
 
     def get_nepoch_lr(current_games):
-        if current_games < 100000:
-            nepoch = 8
-            lr = 0.0003
-            update_freq = batch_games
-        elif current_games < 300000:
-            nepoch = 4
-            lr = 0.0001
-            update_freq = batch_games
-        elif current_games < 1000000:
-            nepoch = 4
-            lr = 0.00003
-            update_freq = batch_games
-        elif current_games < 3000000:
-            nepoch = 2
-            lr = 0.00001
-            update_freq = batch_games
-        elif current_games < 5000000:
-            nepoch = 2
-            lr = 0.000003
-            update_freq = batch_games
-        else:
-            nepoch = 2
-            lr = 0.000001
-            update_freq = batch_games
+        nepoch = 1
+        lr = 0.001
+        update_freq = batch_games
         return nepoch, lr, update_freq
 
     m, X, B, c = 4, boardsize, 24, 64  # m input channels, X*X input size, N residual blocks, c channels
@@ -297,7 +276,6 @@ if __name__ == '__main__':
     model_version = 'v0_4-PG'
 
     Qmodel_inference = P_V0_1(m, X, B, c, mlp_hidden_sizes)
-    model_version = 'v0_4-PG'
 
     B_policy, c_policy = 8, 64
     Policy_model = PolicyNet_j(m, X, B_policy, c_policy) # small policy network
@@ -337,10 +315,29 @@ if __name__ == '__main__':
         pass
 
 
+    # create small model for distillation
+    m, X, B, c = 4, boardsize, 24, 32  # m input channels, X*X input size, N residual blocks, c channels
+    mlp_hidden_sizes = [64]  # Sizes of hidden layers in the MLP
+    Qmodel_D = P_V0_1(m, X, B, c, mlp_hidden_sizes)
+    model_version = 'v0_4-PGD'
+
+    try:
+        Policy_model_D.load_state_dict(torch.load(os.path.join(wd,'checkpoint_D.pth'),weights_only=True))
+        print('Loaded a checkpoint for Distilled P model')
+    except:pass
+
+    B_policy, c_policy = 8, 32
+    Policy_model_D = PolicyNet_j(m, X, B_policy, c_policy) # small policy network
+    try:
+        Policy_model_D.load_state_dict(torch.load(os.path.join(wd,'checkpoint_Policy_D.pth'),weights_only=True))
+        print('Loaded a checkpoint for Distilled Policy')
+    except:pass
+    
+    current_games = 0
+
     pool = Pool(processes=num_processes)
 
-    # initialize compiled model
-    print('Recompile')
+
     Qmodel_inference.load_state_dict(Qmodel.state_dict())
     Qmodel_inference.eval()
 
@@ -382,6 +379,7 @@ if __name__ == '__main__':
         eval_time = sum([res[5] for res in results])
 
         print(Xd.shape, Yd.shape, Sd.shape, Ad.shape, wins, Yd.mean().item())
+        #quit()
         #torch.save(Xd.to(torch.int8),os.path.join(wd,'training',f'X_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
         #torch.save(Yd,os.path.join(wd,'training',f'Y_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
         #torch.save(Sd.to(torch.int8),os.path.join(wd,'training',f'S_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
@@ -408,21 +406,24 @@ if __name__ == '__main__':
         del Rd, Ad, rows, cols, batch_indices, head_indices, Adfull
         
         train_loader_Policy = DataLoader(train_dataset_Policy, batch_size=batch_size, shuffle=True, pin_memory=True)
-        opt = torch.optim.Adam(Policy_model.parameters(), lr=lr, betas=(0.9, 0.999), weight_decay=l2_reg_strength)
-        Policy_model, loss = train_model_policy('cuda', Policy_model, torch.nn.CrossEntropyLoss(), train_loader_Policy, nepoch//2, opt)
-        Policy_model.to('cpu')
+        opt = torch.optim.Adam(Policy_model_D.parameters(), lr=lr*100, betas=(0.9, 0.999), weight_decay=l2_reg_strength)
+        Policy_model_D, loss = train_model_policy('cuda', Policy_model_D, torch.nn.CrossEntropyLoss(), train_loader_Policy, nepoch, opt)
+        Policy_model_D.to('cpu')
         del train_dataset_Policy, train_loader_Policy
         torch.cuda.empty_cache()
         gc.collect()
 
         # Train Value
         print('Training Value')
+        indices = random.sample(range(len(Xd)), len(Xd)//10)
         train_dataset = CustomTensorDataset((Xd, Yd), transform=train_transform)
+        # Create a subset
+        train_dataset = Subset(train_dataset, indices)
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-        opt = torch.optim.Adam(Qmodel.parameters(), lr=lr, betas=(0.9, 0.999), weight_decay=l2_reg_strength)
-        Qmodel, loss = train_model('cuda', Qmodel, torch.nn.MSELoss(), train_loader, nepoch, opt)
-        Qmodel.to('cpu')
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=2)
+        opt = torch.optim.Adam(Qmodel_D.parameters(), lr=lr, betas=(0.9, 0.999), weight_decay=l2_reg_strength)
+        Qmodel_D, loss = train_model('cuda', Qmodel_D, torch.nn.MSELoss(), train_loader, nepoch, opt)
+        Qmodel_D.to('cpu')
         del train_dataset, train_loader, Xd, Yd
         torch.cuda.empty_cache()
         gc.collect()
@@ -430,25 +431,18 @@ if __name__ == '__main__':
         current_games += batch_games
 
         if current_games % refresh_freq == 0:
-            print('Save model and restart pool')
-            torch.save(Qmodel.state_dict(),os.path.join(wd,'models',f'Pmodel_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
-            torch.save(Policy_model.state_dict(),os.path.join(wd,'models',f'Policy_{model_version}_B{B_policy}C{c_policy}_{str(current_games).zfill(10)}.pth'))
+            print('restart pool')
+            #torch.save(Qmodel_D.state_dict(),os.path.join(wd,'models',f'Pmodel_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
+            #torch.save(Policy_model_D.state_dict(),os.path.join(wd,'models',f'Policy_{model_version}_B{B_policy}C{c_policy}_{str(current_games).zfill(10)}.pth'))
 
             pool.close()
             pool.join()
             gc.collect()
             pool = Pool(processes=num_processes)
-            
-        if current_games % update_freq == 0:
-            print('Update model weight for selfplay')
-            Qmodel_inference.load_state_dict(Qmodel.state_dict())
-            Qmodel_inference.eval()
 
-            Policy_model_inference.load_state_dict(Policy_model.state_dict())
-            Policy_model_inference.eval()
-
-        torch.save(Qmodel.state_dict(),os.path.join(wd,f'checkpoint.pth'))
-        torch.save(Policy_model.state_dict(),os.path.join(wd,f'checkpoint_Policy.pth'))
+        print('Save checkpoint')
+        torch.save(Qmodel_D.state_dict(),os.path.join(wd,f'checkpoint_D.pth'))
+        torch.save(Policy_model_D.state_dict(),os.path.join(wd,f'checkpoint_Policy_D.pth'))
 
         t1 = time.time()
         print('Model Params:',m, X, B, c,'\n',
