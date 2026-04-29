@@ -245,14 +245,13 @@ if __name__ == '__main__':
         os.mkdir(os.path.join(wd,'training'))
 
     num_processes = 6
-    sp_batch_size = 24
+    sp_batch_size = 32
 
     batch_games = 5000
-    refresh_freq = 20000
     boardsize = 8
 
-    temp_args = (0.05, 2.0, 0, 3) # Base, Scale, Power, Policy temperature. follows t = B * ceil( floor(turn // S) + 1) ** P
-    max_action = 400 # 9999 if not doing any action pruning. set to low number for action pruning (use policy to speed up selfplay)
+    temp_args = (0.1, 2.0, 0, 3) # Base, Scale, Power, Policy temperature. follows t = B * ceil( floor(turn // S) + 1) ** P
+    max_action = 100 # start in # 3260000
     prune_chance = 0.9 # chance of action pruning.
     randomdir = True
     randomtransform = True
@@ -268,36 +267,32 @@ if __name__ == '__main__':
         if current_games < 100000:
             nepoch = 8
             lr = 0.0003
-            update_freq = batch_games
+            update_freq = 5000
         elif current_games < 300000:
             nepoch = 4
             lr = 0.0001
-            update_freq = batch_games
+            update_freq = 5000
         elif current_games < 1000000:
             nepoch = 4
             lr = 0.00003
-            update_freq = batch_games
+            update_freq = 5000
         elif current_games < 3000000:
             nepoch = 2
             lr = 0.00001
-            update_freq = batch_games
-        elif current_games < 5000000:
-            nepoch = 2
-            lr = 0.000003
-            update_freq = batch_games
+            update_freq = 5000
         else:
             nepoch = 2
-            lr = 0.000001
-            update_freq = batch_games
+            lr = 0.000003
+            update_freq = 5000
         return nepoch, lr, update_freq
 
-    m, X, B, c = 4, boardsize, 24, 64  # m input channels, X*X input size, N residual blocks, c channels
+    m, X, B, c = 4, boardsize, 16, 64  # m input channels, X*X input size, N residual blocks, c channels
     mlp_hidden_sizes = [256]  # Sizes of hidden layers in the MLP
     Qmodel = P_V0_1(m, X, B, c, mlp_hidden_sizes)
-    model_version = 'v0_4-PG'
+    model_version = 'v0_3-PG'
 
     Qmodel_inference = P_V0_1(m, X, B, c, mlp_hidden_sizes)
-    model_version = 'v0_4-PG'
+    model_version = 'v0_3-PG'
 
     B_policy, c_policy = 8, 64
     Policy_model = PolicyNet_j(m, X, B_policy, c_policy) # small policy network
@@ -334,6 +329,8 @@ if __name__ == '__main__':
             pass
     except:
         print('New policy model')
+        except:
+            pass
         pass
 
 
@@ -429,10 +426,10 @@ if __name__ == '__main__':
 
         current_games += batch_games
 
-        if current_games % refresh_freq == 0:
+        if current_games % 20000 == 0:
             print('Save model and restart pool')
             torch.save(Qmodel.state_dict(),os.path.join(wd,'models',f'Pmodel_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
-            torch.save(Policy_model.state_dict(),os.path.join(wd,'models',f'Policy_{model_version}_B{B_policy}C{c_policy}_{str(current_games).zfill(10)}.pth'))
+            torch.save(Policy_model.state_dict(),os.path.join(wd,'models',f'Policy_{model_version}_B{B}C{c}_{str(current_games).zfill(10)}.pth'))
 
             pool.close()
             pool.join()
